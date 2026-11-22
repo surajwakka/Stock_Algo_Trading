@@ -25,32 +25,9 @@ services:
       - key: APP_ENV
         value: production
 
-  # 11:00 UTC = 16:30 IST, weekdays, after NSE cash-market close.
-  - type: cron
-    name: stockalgo-daily-paper
-    runtime: python
-    region: singapore
-    plan: 1c-2g
-    schedule: "0 11 * * 1-5"
-    buildCommand: pip install -r requirements-render.txt
-    startCommand: python cloud_job.py daily
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.11
-      - key: DATABASE_URL
-        fromDatabase:
-          name: stockalgo-postgres
-          property: connectionString
-      - key: PAPER_ONLY
-        value: "true"
-      - key: LIVE_TRADING_ENABLED
-        value: "false"
-      - key: APP_ENV
-        value: production
-
 databases:
   - name: stockalgo-postgres
     region: singapore
-    plan: 0.1c-256mb
+    plan: free
     databaseName: stockalgo
     user: stockalgo
