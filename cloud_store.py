@@ -7,7 +7,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 import json, os
 import pandas as pd
-from sqlalchemy import create_engine, String, Integer, Float, Boolean, Date, DateTime, LargeBinary, JSON, select, desc
+from sqlalchemy import create_engine, String, Integer, Float, Boolean, Date, DateTime, LargeBinary, JSON, select, desc, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 def _database_url():
@@ -24,6 +24,61 @@ engine = create_engine(URL, pool_pre_ping=True, pool_size=2, max_overflow=2, con
 Session = sessionmaker(bind=engine, expire_on_commit=False)
 
 class Base(DeclarativeBase): pass
+
+
+
+class MarketQuote(Base):
+    __tablename__ = "market_quotes"
+    symbol: Mapped[str] = mapped_column(String(40), primary_key=True)
+    exchange: Mapped[str] = mapped_column(String(8), primary_key=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+class MarketCandle(Base):
+    __tablename__ = "market_candles"
+    __table_args__ = (UniqueConstraint("symbol", "exchange", "interval_minutes", "candle_time", name="uq_market_candle"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(40), index=True)
+    exchange: Mapped[str] = mapped_column(String(8))
+    interval_minutes: Mapped[int] = mapped_column(Integer)
+    candle_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    open: Mapped[float] = mapped_column(Float)
+    high: Mapped[float] = mapped_column(Float)
+    low: Mapped[float] = mapped_column(Float)
+    close: Mapped[float] = mapped_column(Float)
+    volume: Mapped[float] = mapped_column(Float, default=0)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class FundamentalSnapshot(Base):
+    __tablename__ = "fundamental_snapshots"
+    symbol: Mapped[str] = mapped_column(String(40), primary_key=True)
+    company_name: Mapped[str] = mapped_column(String(160), default="")
+    sector: Mapped[str] = mapped_column(String(100), default="")
+    market_cap_cr: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pe: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pb: Mapped[float | None] = mapped_column(Float, nullable=True)
+    roe: Mapped[float | None] = mapped_column(Float, nullable=True)
+    roce: Mapped[float | None] = mapped_column(Float, nullable=True)
+    debt_equity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sales_growth_3y: Mapped[float | None] = mapped_column(Float, nullable=True)
+    profit_growth_3y: Mapped[float | None] = mapped_column(Float, nullable=True)
+    opm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    dividend_yield: Mapped[float | None] = mapped_column(Float, nullable=True)
+    promoter_holding: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pledged_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    current_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    interest_coverage: Mapped[float | None] = mapped_column(Float, nullable=True)
+    free_cash_flow_cr: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source: Mapped[str] = mapped_column(String(100), default="user_import")
+    period_end: Mapped[str] = mapped_column(String(20), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+class SavedScreen(Base):
+    __tablename__ = "saved_screens"
+    name: Mapped[str] = mapped_column(String(100), primary_key=True)
+    definition: Mapped[dict] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 class PortfolioState(Base):
     __tablename__ = "portfolio_state"
@@ -261,3 +316,108 @@ def get_strategy(name):
     init_db()
     with Session() as s:
         row=s.get(Strategy,name); return row.payload if row else None
+
+
+def save_market_quote(symbol, exchange, payload, fetched_at=None):
+    init_db()
+    fetched_at = fetched_at or datetime.now(timezone.utc)
+    with Session.begin() as session:
+        row = session.get(MarketQuote, (symbol, exchange))
+        if row is None:
+            session.add(MarketQuote(symbol=symbol, exchange=exchange, payload=payload, fetched_at=fetched_at))
+        else:
+            row.payload, row.fetched_at = payload, fetched_at
+
+def latest_market_quotes(symbols=None):
+    init_db()
+    with Session() as session:
+        rows = session.scalars(select(MarketQuote).order_by(MarketQuote.symbol)).all()
+        if symbols:
+            wanted = set(symbols)
+            rows = [r for r in rows if r.symbol in wanted]
+        return [{"symbol":r.symbol,"exchange":r.exchange,"quote":r.payload,"fetched_at":r.fetched_at.isoformat()} for r in rows]
+
+def save_market_candles(symbol, exchange, interval_minutes, candles, fetched_at=None):
+    init_db()
+    fetched_at = fetched_at or datetime.now(timezone.utc)
+    saved = 0
+    with Session.begin() as session:
+        for candle in candles or []:
+            if isinstance(candle, dict):
+                ts = candle.get("timestamp") or candle.get("time")
+                vals = [candle.get(k) for k in ("open","high","low","close","volume")]
+            else:
+                if len(candle) < 6: continue
+                ts, *vals = candle[:6]
+            try:
+                ts = datetime.fromtimestamp(float(ts), tz=timezone.utc)
+                o,h,l,c,v = [float(x or 0) for x in vals]
+            except (TypeError, ValueError, OverflowError):
+                continue
+            row = session.scalar(select(MarketCandle).where(
+                MarketCandle.symbol==symbol, MarketCandle.exchange==exchange,
+                MarketCandle.interval_minutes==interval_minutes, MarketCandle.candle_time==ts))
+            if row is None:
+                session.add(MarketCandle(symbol=symbol,exchange=exchange,interval_minutes=interval_minutes,
+                    candle_time=ts,open=o,high=h,low=l,close=c,volume=v,fetched_at=fetched_at))
+            else:
+                row.open,row.high,row.low,row.close,row.volume,row.fetched_at=o,h,l,c,v,fetched_at
+            saved += 1
+    return saved
+
+def latest_market_candles(symbol, exchange="NSE", interval_minutes=5, limit=500):
+    init_db()
+    with Session() as session:
+        rows = session.scalars(select(MarketCandle).where(
+            MarketCandle.symbol==symbol, MarketCandle.exchange==exchange,
+            MarketCandle.interval_minutes==interval_minutes
+        ).order_by(desc(MarketCandle.candle_time)).limit(min(max(limit,1),2000))).all()
+        return [{"timestamp":r.candle_time.isoformat(),"open":r.open,"high":r.high,
+            "low":r.low,"close":r.close,"volume":r.volume} for r in reversed(rows)]
+
+
+FUNDAMENTAL_FIELDS = {
+    "market_cap_cr","pe","pb","roe","roce","debt_equity","sales_growth_3y",
+    "profit_growth_3y","opm","dividend_yield","promoter_holding","pledged_percent",
+    "current_ratio","interest_coverage","free_cash_flow_cr"
+}
+def upsert_fundamentals(rows, source="user_import"):
+    init_db(); count=0
+    with Session.begin() as session:
+        for raw in rows:
+            symbol=str(raw.get("symbol","")).strip().upper()
+            if not symbol: continue
+            data={"company_name":str(raw.get("company_name",""))[:160],
+                  "sector":str(raw.get("sector",""))[:100],"source":source,
+                  "period_end":str(raw.get("period_end",""))[:20],
+                  "updated_at":datetime.now(timezone.utc)}
+            for key in FUNDAMENTAL_FIELDS:
+                value=raw.get(key)
+                if value in (None,""): data[key]=None
+                else:
+                    try: data[key]=float(value)
+                    except (TypeError,ValueError): data[key]=None
+            row=session.get(FundamentalSnapshot,symbol)
+            if row is None: session.add(FundamentalSnapshot(symbol=symbol,**data))
+            else:
+                for key,value in data.items(): setattr(row,key,value)
+            count+=1
+    return count
+
+def list_fundamentals():
+    init_db()
+    with Session() as session:
+        rows=session.scalars(select(FundamentalSnapshot).order_by(FundamentalSnapshot.symbol)).all()
+        return [{k:getattr(r,k) for k in ["symbol","company_name","sector","market_cap_cr","pe","pb","roe","roce","debt_equity","sales_growth_3y","profit_growth_3y","opm","dividend_yield","promoter_holding","pledged_percent","current_ratio","interest_coverage","free_cash_flow_cr","source","period_end","updated_at"]} for r in rows]
+
+def save_screen(name, definition):
+    init_db()
+    with Session.begin() as session:
+        row=session.get(SavedScreen,name)
+        if row is None: session.add(SavedScreen(name=name,definition=definition,updated_at=datetime.now(timezone.utc)))
+        else: row.definition=definition; row.updated_at=datetime.now(timezone.utc)
+
+def list_screens():
+    init_db()
+    with Session() as session:
+        return [{"name":r.name,"definition":r.definition,"updated_at":r.updated_at.isoformat()} for r in session.scalars(select(SavedScreen).order_by(SavedScreen.name)).all()]

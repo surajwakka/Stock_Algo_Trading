@@ -109,3 +109,62 @@ Groww provides quote, LTP, OHLC and historical candle APIs. The SDK documentatio
 - No direct NSE/BSE licensed data feed or Moneycontrol API integration.
 - Yahoo Finance and Google News RSS remain best-effort sources for existing model/news jobs.
 - Existing paper broker fill assumptions are simplified and do not model exchange queue position or partial fills.
+
+
+## Groww read-only connection verification
+
+The dashboard's Groww panel checks configuration automatically at `/api/groww/status`.
+Set `GROWW_API_KEY` and `GROWW_API_SECRET` on the `stockalgo-cloud` web service in Render,
+then redeploy. The status indicator means only that both variables are present and the
+`growwapi` SDK is installed; it does not prove broker authentication. Tap **Test account
+connection** to call Groww's profile API and verify the daily API-key approval. Quote,
+holdings and order-history buttons make read-only requests. Live order submission,
+modification and cancellation remain disabled.
+
+
+## Groww market-data collector (v6)
+
+The dashboard drives polling while it is open (important on Render Free, which does not
+provide an always-on background worker). Defaults: 5-minute candles, quote polling every
+5 seconds, and historical candle refresh every 60 seconds. Automatic quote polling is
+limited to weekdays 09:15–15:30 Asia/Kolkata; manual refresh remains available outside
+that window. Live quotes are cached in-process and latest quotes plus 5-minute OHLCV
+candles are persisted in PostgreSQL. Historical requests are limited to a rolling
+15-day window per Groww's documented 5-minute request limit. The collector batches up
+to 50 symbols per LTP call, throttles requests, and uses stored quotes as explicitly
+stale fallback data when Groww is unavailable.
+
+Groww documents Live Data limits of 10 requests/second and 300 requests/minute across
+quote/LTP/OHLC APIs. This implementation intentionally polls a watchlist batch once
+every 5 seconds (about 12 live-data requests/minute per active dashboard instance),
+and historical refresh no more than once per minute per symbol. These limits are
+provider-side ceilings, not targets; monitor the API response and adjust if Groww changes
+its policy. No order-writing endpoints are enabled.
+
+
+## Market Intelligence & Stock Screener (v7)
+
+Open `/screener` from the dashboard. It provides a configurable AND/OR filter builder,
+saved screens, and a results table combining imported fundamental snapshots with
+persisted Groww market quotes and 5-minute candle-derived technical metrics.
+
+### Fundamental data availability
+The screener does not scrape Screener.in or assume Groww supplies company financials.
+Fundamental snapshots must be imported from an authorized data provider or your own
+licensed dataset through `POST /api/screener/import`. The page accepts JSON rows. A CSV
+field template is included as `fundamentals_import_template.csv`; convert authorized CSV
+records to JSON before import. Values for percentage fields must be numeric percentages
+(e.g. 18.5 means 18.5%).
+
+Supported fundamental fields: market_cap_cr, pe, pb, roe, roce, debt_equity,
+sales_growth_3y, profit_growth_3y, opm, dividend_yield, promoter_holding,
+pledged_percent, current_ratio, interest_coverage, free_cash_flow_cr.
+Supported technical fields: last_price, return_5bar, return_20bar, rsi_14,
+sma20_distance, sma50_distance, volume_ratio. Returns and moving averages are based
+on stored 5-minute candles (bars, not trading days). Technical filters need sufficient
+candle history. Missing metrics never satisfy a condition.
+
+Routes: GET /screener, GET /api/screener/filters, POST /api/screener/run,
+POST /api/screener/import, GET/POST /api/screener/screens.
+All routes require dashboard HTTP Basic authentication. Paper-only mode and the
+live-order hard-disable remain unchanged.
