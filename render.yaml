@@ -24,6 +24,10 @@ services:
         value: "false"
       - key: APP_ENV
         value: production
+      - key: GROWW_API_KEY
+        sync: false
+      - key: GROWW_API_SECRET
+        sync: false
 
 databases:
   - name: stockalgo-postgres

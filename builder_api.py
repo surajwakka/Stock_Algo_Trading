@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 import indicators as I
 import predictor as P
@@ -27,25 +27,88 @@ HERE = Path(__file__).parent
 
 
 class Spec(BaseModel):
-    id: str
+    id: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z][A-Za-z0-9_]*$")
     type: str
-    params: dict = {}
+    params: dict = Field(default_factory=dict)
+
+    @field_validator("type")
+    @classmethod
+    def supported_type(cls, value):
+        if value not in I.REGISTRY:
+            raise ValueError(f"Unsupported indicator: {value}")
+        return value
+
+    @field_validator("params")
+    @classmethod
+    def valid_params(cls, value):
+        clean = {}
+        for key, raw in value.items():
+            try:
+                number = float(raw)
+            except (TypeError, ValueError):
+                raise ValueError(f"Indicator parameter '{key}' must be numeric")
+            if not np.isfinite(number) or number <= 0:
+                raise ValueError(f"Indicator parameter '{key}' must be greater than zero")
+            clean[key] = number
+        return clean
 
 
 class Block(BaseModel):
     logic: str = "AND"
-    rules: list[dict] = []
+    rules: list[dict] = Field(default_factory=list)
+
+    @field_validator("logic")
+    @classmethod
+    def valid_logic(cls, value):
+        value = value.upper()
+        if value not in {"AND", "OR"}:
+            raise ValueError("Rule logic must be AND or OR")
+        return value
+
+    @field_validator("rules")
+    @classmethod
+    def valid_rules(cls, rules):
+        for index, rule in enumerate(rules, 1):
+            if not isinstance(rule, dict):
+                raise ValueError(f"Rule {index} must be an object")
+            if not str(rule.get("left", "")).strip() or not str(rule.get("right", "")).strip():
+                raise ValueError(f"Rule {index}: both left and right operands are required")
+            if rule.get("op") not in {">", "<", "crosses_above", "crosses_below"}:
+                raise ValueError(f"Rule {index}: unsupported comparison operator")
+        return rules
 
 
 class RunReq(BaseModel):
-    symbol: str = "RELIANCE.NS"
+    symbol: str = Field(default="RELIANCE.NS", min_length=1, max_length=40)
     period: str = "2y"
     interval: str = "1d"
-    indicators: list[Spec] = []
-    entry: Block = Block()
-    exit: Block = Block()
-    cost: float = 0.0005
-    stop_pct: float = 0.0
+    indicators: list[Spec] = Field(default_factory=list)
+    entry: Block = Field(default_factory=Block)
+    exit: Block = Field(default_factory=Block)
+    cost: float = Field(default=0.0005, ge=0, le=0.05)
+    stop_pct: float = Field(default=0.0, ge=0, le=99)
+
+    @field_validator("period")
+    @classmethod
+    def valid_period(cls, value):
+        if value not in {"1mo", "3mo", "6mo", "1y", "2y", "5y", "10y"}:
+            raise ValueError("Choose a supported history period")
+        return value
+
+    @field_validator("interval")
+    @classmethod
+    def valid_interval(cls, value):
+        if value not in {"1d", "1h", "15m", "5m"}:
+            raise ValueError("Choose a supported timeframe")
+        return value
+
+    @model_validator(mode="after")
+    def compatible_history(self):
+        if self.interval in {"15m", "5m"} and self.period != "1mo":
+            raise ValueError("Yahoo Finance 5m/15m history is limited: choose 1 month.")
+        if self.interval == "1h" and self.period in {"5y", "10y"}:
+            raise ValueError("Hourly data history is limited: choose 2 years or less.")
+        return self
 
 
 @lru_cache(maxsize=32)
@@ -81,6 +144,9 @@ def run(req: RunReq):
         if len(df) < 60:
             raise ValueError("Not enough data returned for this symbol/period")
         specs = [s.model_dump() for s in req.indicators]
+        ids = [item["id"] for item in specs]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Indicator names must be unique. Remove or rename duplicate indicators.")
         series = I.compute(df, specs)
         ps = I.oof_series(req.symbol).reindex(df.index)
         if ps.notna().any():
