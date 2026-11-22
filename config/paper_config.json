@@ -1,0 +1,52 @@
+{
+  "profile_name": "NIFTY50_Swing_Daily_Paper",
+  "mode": "paper_only",
+  "live_trading_enabled": false,
+  "universe_file": "config/universe_nifty50.csv",
+  "exchange": "NSE",
+  "interval": "1d",
+  "period": "5y",
+  "prediction_horizon_bars": 5,
+  "long_probability_threshold": 0.55,
+  "exit_probability_threshold": 0.48,
+  "allow_short": false,
+  "starting_virtual_capital_inr": 50000,
+  "risk_per_trade_pct": 1.0,
+  "max_position_pct": 15.0,
+  "max_open_positions": 5,
+  "stop_atr_multiple": 2.0,
+  "target_atr_multiple": 3.0,
+  "max_holding_bars": 5,
+  "max_daily_loss_pct": 2.0,
+  "max_orders_per_day": 10,
+  "limit_buffer_bps": 10,
+  "estimated_cost_per_side_bps": 10,
+  "min_share_price_inr": 50,
+  "max_order_value_inr": 15000,
+  "news_sentiment": {
+    "enabled": true,
+    "block_below_score": -0.25,
+    "lookback_days": 3,
+    "max_news_age_days": 7,
+    "missing_data_policy": "block_entries"
+  },
+  "fundamental_filter": {
+    "enabled": true,
+    "min_market_cap_inr": 10000000000,
+    "min_return_on_equity": 0.08,
+    "max_trailing_pe": 60.0,
+    "cache_hours": 24,
+    "missing_data_policy": "block_entries"
+  },
+  "paper_execution": {
+    "fill_model": "instant_limit_assumption",
+    "note": "Prototype ledger only; not a realistic next-session fill simulator."
+  },
+  "data": {
+    "price_provider": "Yahoo Finance via yfinance",
+    "sentiment_provider": "Google News RSS",
+    "fundamentals_provider": "Yahoo Finance company metadata"
+  },
+  "state_file": "state_paper_nifty50.json",
+  "kill_file": "KILL"
+}

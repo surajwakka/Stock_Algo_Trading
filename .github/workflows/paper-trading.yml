@@ -1,0 +1,82 @@
+name: Daily NIFTY 50 Paper Trading
+
+on:
+  schedule:
+    # 16:30 India time (UTC+5:30), Monday-Friday, after the NSE cash close.
+    - cron: "0 11 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stockalgo-daily-paper
+  cancel-in-progress: false
+
+jobs:
+  paper-cycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout application
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Checkout persistent paper-state branch
+        uses: actions/checkout@v4
+        with:
+          ref: paper-state
+          path: .runtime-state
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+
+      - name: Restore model and paper ledger
+        shell: bash
+        run: |
+          mkdir -p models data
+          if [ -d .runtime-state/models ]; then cp -a .runtime-state/models/. models/; fi
+          if [ -d .runtime-state/data ]; then cp -a .runtime-state/data/. data/; fi
+          for f in state_paper_nifty50.json trades.csv equity_paper_nifty50.csv signals_paper_nifty50.csv cloud_run_status.json; do
+            if [ -f ".runtime-state/$f" ]; then cp ".runtime-state/$f" .; fi
+          done
+
+      - name: Run paper-only daily cycle
+        env:
+          ALLOW_LIVE_ORDERS: "NO"
+          CONFIRM_LIVE: "NO"
+        run: python cloud_paper_job.py
+
+      - name: Persist model, sentiment and paper ledger
+        shell: bash
+        run: |
+          mkdir -p .runtime-state/models .runtime-state/data
+          cp -a models/. .runtime-state/models/
+          cp -a data/. .runtime-state/data/
+          for f in state_paper_nifty50.json trades.csv equity_paper_nifty50.csv signals_paper_nifty50.csv cloud_run_status.json; do
+            if [ -f "$f" ]; then cp "$f" .runtime-state/; fi
+          done
+          cd .runtime-state
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          # The app branch's .gitignore excludes generated model/data files;
+          # force-add the runtime snapshot on this dedicated state branch.
+          git add -f models data
+          for f in state_paper_nifty50.json trades.csv equity_paper_nifty50.csv signals_paper_nifty50.csv cloud_run_status.json; do
+            if [ -f "$f" ]; then git add -f "$f"; fi
+          done
+          if ! git diff --cached --quiet; then
+            git commit -m "Update NIFTY 50 paper ledger $(date -u +%F)"
+            git push
+          else
+            echo "No paper-state changes to persist."
+          fi

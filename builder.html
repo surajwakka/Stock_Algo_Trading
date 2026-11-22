@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Strategy Builder</title>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+  :root { --bg:#0f1419; --panel:#171d25; --line:#2a3340; --txt:#d7dde5; --mut:#8793a3; --acc:#3b82f6; --g:#22c55e; --r:#ef4444; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt); font:14px system-ui,sans-serif; }
+  header { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:10px 12px; background:var(--panel); border-bottom:1px solid var(--line); }
+  input, select, button { background:var(--bg); color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:6px 8px; font:inherit; }
+  button { cursor:pointer; } button.primary { background:var(--acc); border-color:var(--acc); color:#fff; font-weight:600; }
+  button.x { padding:2px 8px; color:var(--mut); }
+  .layout { display:grid; grid-template-columns:200px 1fr 340px; gap:10px; padding:10px; }
+  @media (max-width:1000px){ .layout { grid-template-columns:1fr; } }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px; }
+  h3 { margin:0 0 8px; font-size:13px; color:var(--mut); text-transform:uppercase; letter-spacing:.05em; }
+  .chip { display:inline-block; margin:3px 4px 3px 0; padding:6px 10px; border:1px solid var(--line); border-radius:999px; cursor:grab; background:var(--bg); user-select:none; }
+  .chip:hover { border-color:var(--acc); }
+  #drop { min-height:70px; border:2px dashed var(--line); border-radius:8px; padding:8px; display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
+  #drop.over { border-color:var(--acc); background:#3b82f61a; }
+  #drop .hint { color:var(--mut); align-self:center; }
+  .card { border:1px solid var(--line); border-radius:8px; padding:6px 8px; background:var(--bg); }
+  .card b { margin-right:6px; } .card label { color:var(--mut); font-size:12px; margin-left:6px; }
+  .card input { width:62px; padding:3px 5px; }
+  .rule { display:grid; grid-template-columns:1fr 118px 1fr auto; gap:4px; margin-bottom:5px; }
+  .rule input, .rule select { width:100%; min-width:0; }
+  .row { display:flex; justify-content:space-between; align-items:center; margin:6px 0; }
+  #metrics { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:8px; }
+  .m { background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:6px 8px; }
+  .m span { display:block; color:var(--mut); font-size:11px; } .m b { font-size:15px; }
+  #err { color:var(--r); margin-top:6px; white-space:pre-wrap; }
+  .chartbox { margin-bottom:8px; } .chartbox small { color:var(--mut); }
+  .pos { color:var(--g); } .neg { color:var(--r); }
+</style>
+</head>
+<body>
+<header>
+  <input id="symbol" value="RELIANCE.NS" size="14" title="Yahoo symbol, or SYNTH for offline demo">
+  <select id="period"><option>6mo</option><option>1y</option><option selected>2y</option><option>5y</option><option>10y</option></select>
+  <select id="interval"><option selected>1d</option><option>1h</option><option>15m</option></select>
+  <label>cost <input id="cost" type="number" step="0.0001" value="0.0005" style="width:80px"></label>
+  <label>stop % <input id="stop" type="number" step="0.5" value="0" style="width:60px"></label>
+  <button class="primary" id="run">Run backtest</button>
+  <span style="flex:1"></span>
+  <input id="sname" placeholder="strategy name" size="14">
+  <button id="save">Save</button>
+  <select id="load"><option value="">Load…</option></select>
+</header>
+
+<div class="layout">
+  <div class="panel">
+    <h3>Indicators</h3>
+    <div id="palette"></div>
+    <p style="color:var(--mut);font-size:12px">Drag onto the drop area, or tap to add. Operand <code>p_up</code> = ML model probability (run multi.py train first).</p>
+  </div>
+
+  <div>
+    <div id="drop"><span class="hint">Drop indicators here</span></div>
+    <div id="charts"></div>
+    <div id="err"></div>
+  </div>
+
+  <div>
+    <div class="panel" style="margin-bottom:10px">
+      <h3>Entry rules</h3>
+      <div class="row"><span>Combine with</span><select id="entry-logic"><option>AND</option><option>OR</option></select></div>
+      <div id="entry-rules"></div><button id="entry-add">+ rule</button>
+    </div>
+    <div class="panel" style="margin-bottom:10px">
+      <h3>Exit rules</h3>
+      <div class="row"><span>Combine with</span><select id="exit-logic"><option>AND</option><option>OR</option></select></div>
+      <div id="exit-rules"></div><button id="exit-add">+ rule</button>
+    </div>
+    <div class="panel">
+      <h3>Results</h3>
+      <div id="signal" style="color:var(--mut)">Run a backtest.</div>
+      <div id="metrics"></div>
+    </div>
+  </div>
+</div>
+<datalist id="ops"></datalist>
+
+<script>
+const $ = id => document.getElementById(id);
+const COLORS = ['#f59e0b','#a78bfa','#22d3ee','#f472b6','#84cc16','#fb923c'];
+const OPS = ['>','<','crosses_above','crosses_below'];
+let META = {}, counters = {};
+const st = { indicators: [], entry: {logic:'AND', rules:[]}, exit: {logic:'AND', rules:[]} };
+
+/* ---------- indicators ---------- */
+function addIndicator(type, params, id) {
+  counters[type] = (counters[type] || 0) + 1;
+  st.indicators.push({ id: id || type.toLowerCase() + '_' + counters[type], type, params: {...(params || META[type].params)} });
+  renderIndicators();
+}
+function operandNames() {
+  const n = ['open','high','low','close','volume'];
+  st.indicators.forEach(i => META[i.type].outputs.forEach(o => n.push(o ? `${i.id}.${o}` : i.id)));
+  n.push('p_up');
+  return n;
+}
+function renderIndicators() {
+  const drop = $('drop'); drop.innerHTML = '';
+  if (!st.indicators.length) drop.innerHTML = '<span class="hint">Drop indicators here</span>';
+  st.indicators.forEach((ind, idx) => {
+    const c = document.createElement('div'); c.className = 'card';
+    const b = document.createElement('b'); b.textContent = ind.id; c.append(b);
+    Object.keys(META[ind.type].params).forEach(k => {
+      const l = document.createElement('label'); l.append(k + ' ');
+      const inp = document.createElement('input'); inp.type = 'number'; inp.step = 'any'; inp.value = ind.params[k];
+      inp.oninput = () => { ind.params[k] = parseFloat(inp.value); };
+      l.append(inp); c.append(l);
+    });
+    const x = document.createElement('button'); x.className = 'x'; x.textContent = '✕';
+    x.onclick = () => { st.indicators.splice(idx, 1); renderIndicators(); };
+    c.append(x); drop.append(c);
+  });
+  $('ops').innerHTML = operandNames().map(n => `<option value="${n}">`).join('');
+}
+
+/* ---------- rules ---------- */
+function renderRules(which) {
+  const box = $(which + '-rules'); box.innerHTML = '';
+  st[which].rules.forEach((r, idx) => {
+    const row = document.createElement('div'); row.className = 'rule';
+    const mk = (key) => { const i = document.createElement('input'); i.setAttribute('list', 'ops'); i.value = r[key];
+      i.oninput = () => { r[key] = i.value; }; return i; };
+    const op = document.createElement('select');
+    OPS.forEach(o => { const e = document.createElement('option'); e.textContent = o; if (o === r.op) e.selected = true; op.append(e); });
+    op.onchange = () => { r.op = op.value; };
+    const x = document.createElement('button'); x.className = 'x'; x.textContent = '✕';
+    x.onclick = () => { st[which].rules.splice(idx, 1); renderRules(which); };
+    row.append(mk('left'), op, mk('right'), x); box.append(row);
+  });
+  $(which + '-logic').value = st[which].logic;
+}
+['entry','exit'].forEach(w => {
+  $(w + '-add').onclick = () => { st[w].rules.push({left:'close', op:'>', right:''}); renderRules(w); };
+  $(w + '-logic').onchange = e => { st[w].logic = e.target.value; };
+});
+
+/* ---------- state <-> payload ---------- */
+function payload() {
+  return { symbol: $('symbol').value.trim(), period: $('period').value, interval: $('interval').value,
+           indicators: st.indicators, entry: st.entry, exit: st.exit,
+           cost: parseFloat($('cost').value) || 0, stop_pct: parseFloat($('stop').value) || 0 };
+}
+function setState(d) {
+  st.indicators = (d.indicators || []).map(i => ({...i})); counters = {};
+  st.indicators.forEach(i => { const n = parseInt(i.id.split('_').pop()) || 0; counters[i.type] = Math.max(counters[i.type] || 0, n); });
+  st.entry = d.entry; st.exit = d.exit;
+  if (d.symbol) $('symbol').value = d.symbol;
+  if (d.period) $('period').value = d.period;
+  if (d.interval) $('interval').value = d.interval;
+  $('cost').value = d.cost ?? 0.0005; $('stop').value = d.stop_pct ?? 0;
+  renderIndicators(); renderRules('entry'); renderRules('exit');
+}
+
+/* ---------- run + draw ---------- */
+let charts = [];
+function mkChart(parent, h, title) {
+  const wrap = document.createElement('div'); wrap.className = 'chartbox';
+  wrap.innerHTML = `<small>${title}</small>`; const el = document.createElement('div'); wrap.append(el); parent.append(wrap);
+  const ch = LightweightCharts.createChart(el, { width: el.clientWidth, height: h,
+    layout: { background: { color: '#171d25' }, textColor: '#8793a3' },
+    grid: { vertLines: { color: '#232b36' }, horzLines: { color: '#232b36' } },
+    timeScale: { borderColor: '#2a3340' }, rightPriceScale: { borderColor: '#2a3340' } });
+  charts.push({ ch, el }); return ch;
+}
+function belongs(key, id) { return key === id || key.startsWith(id + '.'); }
+
+function draw(d) {
+  const root = $('charts'); root.innerHTML = ''; charts = [];
+  const main = mkChart(root, 380, $('symbol').value + ' price');
+  const cs = main.addCandlestickSeries({ upColor:'#22c55e', downColor:'#ef4444', borderVisible:false, wickUpColor:'#22c55e', wickDownColor:'#ef4444' });
+  cs.setData(d.candles);
+  cs.setMarkers(d.markers.map(m => m.kind === 'entry'
+    ? { time:m.time, position:'belowBar', color:'#22c55e', shape:'arrowUp', text:'B' }
+    : { time:m.time, position:'aboveBar', color:'#ef4444', shape:'arrowDown', text:'S' }));
+  let ci = 0;
+  st.indicators.forEach(ind => {
+    const keys = Object.keys(d.series).filter(k => belongs(k, ind.id));
+    const target = d.overlay[ind.id] ? main : mkChart(root, 140, ind.id + ' (' + ind.type + ')');
+    keys.forEach(k => {
+      if (k.endsWith('.dir')) return;
+      target.addLineSeries({ color: COLORS[ci++ % COLORS.length], lineWidth: 1.5, priceLineVisible: false, title: k.includes('.') ? k.split('.')[1] : '' })
+            .setData(d.series[k]);
+    });
+  });
+  if (d.series.p_up) mkChart(root, 140, 'p_up (ML model, out-of-fold)').addLineSeries({ color: '#f59e0b', lineWidth: 1.5, priceLineVisible: false }).setData(d.series.p_up);
+  const eq = mkChart(root, 140, 'Strategy equity (1.0 = start)');
+  eq.addLineSeries({ color: '#3b82f6', lineWidth: 2 }).setData(d.equity);
+  let busy = false;
+  charts.forEach(({ ch }) => ch.timeScale().subscribeVisibleLogicalRangeChange(r => {
+    if (busy || !r) return; busy = true;
+    charts.forEach(o => { if (o.ch !== ch) o.ch.timeScale().setVisibleLogicalRange(r); });
+    busy = false;
+  }));
+  main.timeScale().fitContent();
+
+  const m = d.metrics;
+  $('metrics').innerHTML = Object.entries(m).map(([k, v]) =>
+    `<div class="m"><span>${k.replace(/_/g,' ')}</span><b class="${k.includes('return') || k.includes('buy') ? (v >= 0 ? 'pos' : 'neg') : ''}">${v}</b></div>`).join('');
+  $('signal').innerHTML = `Latest bar: entry <b>${d.latest.entry_now ? 'TRUE' : 'false'}</b>, exit <b>${d.latest.exit_now ? 'TRUE' : 'false'}</b>`;
+}
+window.addEventListener('resize', () => charts.forEach(({ ch, el }) => ch.applyOptions({ width: el.clientWidth })));
+
+async function api(url, opts) {
+  const r = await fetch(url, opts);
+  if (!r.ok) { let e = r.statusText; try { e = (await r.json()).detail || e; } catch {} throw new Error(e); }
+  return r.json();
+}
+$('run').onclick = async () => {
+  $('err').textContent = ''; $('run').disabled = true; $('run').textContent = 'Running…';
+  try { draw(await api('/api/run', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload()) })); }
+  catch (e) { $('err').textContent = e.message; }
+  $('run').disabled = false; $('run').textContent = 'Run backtest';
+};
+
+/* ---------- save / load ---------- */
+async function refreshStrategies() {
+  const names = await api('/api/strategies');
+  $('load').innerHTML = '<option value="">Load…</option>';
+  names.forEach(n => { const o = document.createElement('option'); o.textContent = n; $('load').append(o); });
+}
+$('save').onclick = async () => {
+  const n = $('sname').value.trim(); if (!n) return ($('err').textContent = 'Enter a strategy name');
+  try { await api('/api/strategies/' + encodeURIComponent(n), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload()) }); $('err').textContent = ''; refreshStrategies(); }
+  catch (e) { $('err').textContent = e.message; }
+};
+$('load').onchange = async e => { if (e.target.value) { setState(await api('/api/strategies/' + encodeURIComponent(e.target.value))); $('sname').value = e.target.value; } };
+
+/* ---------- init ---------- */
+(async function init() {
+  META = await api('/api/indicators');
+  const pal = $('palette');
+  Object.keys(META).forEach(t => {
+    const c = document.createElement('div'); c.className = 'chip'; c.textContent = t; c.draggable = true;
+    c.ondragstart = e => e.dataTransfer.setData('text/plain', t);
+    c.onclick = () => addIndicator(t);
+    pal.append(c);
+  });
+  const drop = $('drop');
+  drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+  drop.ondragleave = () => drop.classList.remove('over');
+  drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); const t = e.dataTransfer.getData('text/plain'); if (META[t]) addIndicator(t); };
+  refreshStrategies().catch(() => {});
+  // starter example: EMA trend + RSI filter
+  setState({ indicators: [{id:'ema_1', type:'EMA', params:{period:20}}, {id:'rsi_1', type:'RSI', params:{period:14}}],
+             entry: {logic:'AND', rules:[{left:'close', op:'crosses_above', right:'ema_1'}, {left:'rsi_1', op:'>', right:'50'}]},
+             exit: {logic:'OR', rules:[{left:'close', op:'crosses_below', right:'ema_1'}]} });
+})();
+</script>
+</body>
+</html>

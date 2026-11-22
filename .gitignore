@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.py[cod]
+.env
+models/*.joblib
+data/fundamentals_cache.json
+data/sentiment.csv
+state_*.json
+trades.csv
+equity_*.csv
+signals_*.csv
+KILL
+
+.pytest_cache/
