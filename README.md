@@ -1,4 +1,4 @@
-# StockAlgo — NIFTY 50 Swing Paper-Test Profile
+# StockAlgo - Algo trading Assistant
 
 This project is configured for the selected local research profile:
 
